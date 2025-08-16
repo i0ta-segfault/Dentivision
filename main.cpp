@@ -4,6 +4,10 @@
 #include "camera.cpp"
 #include "shaders.cpp"
 #include <fstream>
+#include <curl/curl.h>
+#include <cstring>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 #define COLOR 45/255.0f 
 
@@ -15,22 +19,101 @@
 const int screenHeight = 600, screenWidth = 800;
 float fov = 45.f, lastFrame = .0f, deltaTime = .0f, movementSpeed = 2.f, lastX = screenWidth / 2.0f, lastY = screenHeight / 2.0f;
 bool firstMouse = true, wireframeMode = false, rotating = false;
+float makeTeethYellow = 0.213f, shrinkTeeth = 0.0f, dentalCalculus = 0.0f, gingivalRecession = 0.0f;
 
-std::vector<float> vertices, colors, textureCoords;
+std::vector<float> vertices, colors;
 std::vector<unsigned int> indices;
+std::vector<int> type;
 
-glm::vec3 camPos = glm::vec3(0.0, 0.0, 15.0);
+std::string userInput; // To store user input
+std::string apiResponse;  // To store LLM response
+
+glm::vec3 camPos = glm::vec3(0.0, 0.0, 7.0);
 glm::vec3 camFront = glm::vec3(0.0, 0.0, -1.0);
 glm::vec3 camUp = glm::vec3(0.0, 1.0, 0.0);
 glm::mat4 model = glm::mat4(1.0);
 
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t totalSize = size * nmemb;
+    ((std::string*)userp)->append((char*)contents, totalSize);
+    return totalSize;
+}
+
+void sendToAPI(const std::string& input) {
+    CURL* curl = curl_easy_init();
+    if (curl) {
+        CURLcode res;
+        char* escapedInput = curl_escape(input.c_str(), static_cast<int>(input.length()));
+        std::string apiKey = "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";
+        std::string url = "https://api.openai.com/v1/chat/completions";
+
+        std::string payload = R"({
+            "model": "gpt-3.5-turbo",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant that knows dental and medicine."},
+                {"role": "user", "content": ")" + input + R"("}
+            ]
+        })";
+
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        std::string headersString = "Authorization: Bearer " + apiKey;
+        headers = curl_slist_append(headers, headersString.c_str());
+
+        // Configure cURL
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &apiResponse);
+
+        // Perform the request
+        res = curl_easy_perform(curl);
+
+        if (res != CURLE_OK) {
+            std::cerr << "Request failed: " << curl_easy_strerror(res) << std::endl;
+            apiResponse = "Error: " + std::string(curl_easy_strerror(res));
+        } else {
+            std::cout << "Raw API Response: " << apiResponse << std::endl;
+            try {
+                auto jsonResponse = json::parse(apiResponse);
+                if (jsonResponse.contains("error")) {
+                    apiResponse = "API Error: " + jsonResponse["error"]["message"].get<std::string>();
+                } else if (jsonResponse.contains("choices") && !jsonResponse["choices"].empty()) {
+                    apiResponse = jsonResponse["choices"][0]["message"]["content"];
+                } else {
+                    apiResponse = "Unexpected response format.";
+                }
+            } catch (const json::parse_error& e) {
+                apiResponse = "JSON Parsing Error: " + std::string(e.what());
+            }
+        }
+
+        // Cleanup
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+    } else {
+        apiResponse = "Failed to initialize cURL";
+    }
+}
+
+void updateBufferWithString(const std::string& str, char* buffer, size_t bufferSize) {
+    strncpy(buffer, str.c_str(), bufferSize - 1);
+    buffer[bufferSize - 1] = '\0';
+}
+
+void updateStringWithBuffer(std::string& str, const char* buffer) {
+    str = buffer;
+}
+
 void setBuffers() {
-    GLuint VAO, VBO, EBO, CBO, TBO;
+    GLuint VAO, VBO, EBO, CBO, TypeBO;
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
     glGenBuffers(1, &EBO);
     glGenBuffers(1, &CBO);
-    glGenBuffers(1, &TBO);
+    glGenBuffers(1, &TypeBO);
 
     glBindVertexArray(VAO);
 
@@ -50,10 +133,10 @@ void setBuffers() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
 
-    // Texture buffer
-    glBindBuffer(GL_ARRAY_BUFFER, TBO);
-    glBufferData(GL_ARRAY_BUFFER, textureCoords.size() * sizeof(float), textureCoords.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    // Type buffer
+    glBindBuffer(GL_ARRAY_BUFFER, TypeBO);
+    glBufferData(GL_ARRAY_BUFFER, type.size() * sizeof(int), type.data(), GL_STATIC_DRAW);
+    glVertexAttribIPointer(2, 1, GL_INT, sizeof(int), (void*)0);
     glEnableVertexAttribArray(2);
 }
 
@@ -122,6 +205,12 @@ void pollMouseInputs(GLFWwindow* window){
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (ImGui::IsAnyItemActive()) {
+        // Skip rotation if interacting with ImGui elements
+        firstMouse = true; // Reset firstMouse to avoid jumps after interaction
+        return;
+    }
+
     static Camera* camera = static_cast<Camera*>(glfwGetWindowUserPointer(window));
 
     if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS){
@@ -150,45 +239,12 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
     }
 }
 
-GLuint loadTexture(const char* path) {
-    GLuint textureID;
-    glGenTextures(1, &textureID);
-    glBindTexture(GL_TEXTURE_2D, textureID);
-
-    // Set texture parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    // Load image using stb_image
-    int width, height, nrChannels;
-    unsigned char* data = stbi_load(path, &width, &height, &nrChannels, 0);
-    if (data) {
-        GLenum format;
-        if (nrChannels == 1)
-            format = GL_RED;
-        else if (nrChannels == 3)
-            format = GL_RGB;
-        else if (nrChannels == 4)
-            format = GL_RGBA;
-
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-    } else {
-        std::cout << "Failed to load texture" << std::endl;
-    }
-    stbi_image_free(data);
-
-    return textureID;
-}
-
 int main(){
     GLFWwindow* window = InitWindow();  
     if(!window) return -1;
     
     glViewport(0, 0, screenWidth, screenHeight);
-    loadObj("2022-09-18_mouth_sketchfab.obj", vertices, indices, colors, textureCoords);
+    loadObj("2022-09-18_mouth_sketchfab.obj", vertices, indices, colors, type);
 
     setBuffers();
 
@@ -199,6 +255,14 @@ int main(){
     Camera camera(camPos, camFront, camUp, fov, screenWidth, screenHeight, 0.1f, 100.0f);
     glfwSetWindowUserPointer(window, &camera); // Pass the camera to the mouse callback
     glfwSetCursorPosCallback(window, mouse_callback);
+
+    const size_t INPUT_BUFFER_SIZE = 256; // Define a buffer size
+    char inputBuffer[INPUT_BUFFER_SIZE] = ""; // Temporary buffer for input
+    char responseBuffer[1024] = ""; // Temporary buffer for response (adjust size as needed)
+
+    // Initialize buffer from std::string
+    updateBufferWithString(userInput, inputBuffer, INPUT_BUFFER_SIZE);
+    updateBufferWithString(apiResponse, responseBuffer, sizeof(responseBuffer));
 
     //-----imgui-----
     // Initialize ImGui
@@ -218,10 +282,6 @@ int main(){
     model = glm::scale(model, glm::vec3(15.0));
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     
-    GLuint textureID = loadTexture("textures/mouth_Base_color.png");
-    glGenTextures(1, &textureID);
-    glBindTexture(GL_TEXTURE_2D, textureID);
-
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
@@ -255,6 +315,23 @@ int main(){
         ImGui::Begin("Controls");
         ImGui::Checkbox("Wireframe Mode", &wireframeMode);
         ImGui::Checkbox("Rotating", &rotating);
+        ImGui::SliderFloat("Bacterial Deposit over time", &makeTeethYellow, 0.0f, 1.0f);
+        ImGui::SliderFloat("Dental Attrition", &shrinkTeeth, 0.0f, 1.0f);
+        ImGui::SliderFloat("Dental Calculus", &dentalCalculus, 0.0f, 1.0f);
+        ImGui::SliderFloat("Gingival Recession", &gingivalRecession, 0.0f, 0.1f);
+        // Handle user input
+        if (ImGui::InputText("Your Input", inputBuffer, INPUT_BUFFER_SIZE, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            updateStringWithBuffer(userInput, inputBuffer); // Update std::string
+        }
+        if (ImGui::Button("Send to LLM")) {
+            apiResponse.clear(); // Clear the previous response
+            sendToAPI(userInput); // Send input to the API
+            updateBufferWithString(apiResponse, responseBuffer, sizeof(responseBuffer)); // Update buffer
+        }
+
+        // LLM Response
+        ImGui::Text("LLM Response:");
+        ImGui::InputTextMultiline("##Response", responseBuffer, sizeof(responseBuffer), ImVec2(-1, 200), ImGuiInputTextFlags_ReadOnly);
         ImGui::End();
 
         // Rendering
@@ -262,13 +339,14 @@ int main(){
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         
         glUseProgram(shader);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        glUniform1i(glGetUniformLocation(shader, "texture1"), 0);
 
         glUniformMatrix4fv(glGetUniformLocation(shader, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shader, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniformMatrix4fv(glGetUniformLocation(shader, "model"), 1, GL_FALSE, glm::value_ptr(model));
+        glUniform1f(glGetUniformLocation(shader, "makeTeethYellow"), makeTeethYellow);
+        glUniform1f(glGetUniformLocation(shader, "shrinkTeeth"), shrinkTeeth);
+        glUniform1f(glGetUniformLocation(shader, "dentalCalculus"), dentalCalculus);
+        glUniform1f(glGetUniformLocation(shader, "gingivalRecession"), gingivalRecession);
         glUniform1f(glGetUniformLocation(shader, "time"), time);
         glUniform3fv(glGetUniformLocation(shader, "camPos"), 1, glm::value_ptr(camPos));
 

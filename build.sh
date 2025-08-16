@@ -7,7 +7,7 @@ g++ main.cpp glad.c dependencies/imgui.cpp dependencies/imgui_draw.cpp dependenc
     -Idependencies\
     -Idependencies/backends \
     -Lfolder \
-    -lglfw -lGL -lX11 -lpthread -lXrandr -lXi -ldl -lopenal
+    -lglfw -lGL -lX11 -lpthread -lXrandr -lXi -ldl -lopenal -lcurl
 
 # Check if compilation was successful
 if [ $? -ne 0 ]; then
