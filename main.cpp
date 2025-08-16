@@ -44,8 +44,8 @@ void sendToAPI(const std::string& input) {
     if (curl) {
         CURLcode res;
         char* escapedInput = curl_escape(input.c_str(), static_cast<int>(input.length()));
-        std::string apiKey = "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";
-        std::string url = "https://api.openai.com/v1/chat/completions";
+        std::string apiKey = "really_just_a_placeholder";
+        std::string url = "https://noresponse.come";
 
         std::string payload = R"({
             "model": "gpt-3.5-turbo",
